@@ -2,10 +2,12 @@ from shiny import App, reactive, render, ui
 import google.generativeai as genai
 import base64
 import io
+from pathlib import Path
+import tempfile
 
 app_ui = ui.page_sidebar(
     ui.sidebar(
-        ui.input_text("gemini_key", "Gemini API Key", password=True),
+        ui.input_password("gemini_key", "Gemini API Key"),
         ui.hr(),
         ui.input_action_button("record", "Start Recording", class_="btn-primary"),
         ui.input_action_button("stop", "Stop Recording", class_="btn-danger"),
@@ -87,10 +89,12 @@ app_ui = ui.page_sidebar(
                 }
                 
                 const reader = new FileReader();
-                reader.readAsDataURL(audioBlob);
+                reader.readAsArrayBuffer(audioBlob);
                 reader.onloadend = function() {
-                    const base64Audio = reader.result.split(',')[1];
-                    Shiny.setInputValue('audio_data', base64Audio);
+                    const arrayBuffer = reader.result;
+                    const bytes = new Uint8Array(arrayBuffer);
+                    const bytesArray = Array.from(bytes);
+                    Shiny.setInputValue('audio_data', bytesArray);
                 }
             }
             
@@ -120,19 +124,33 @@ def server(input, output, session):
         
     @reactive.effect
     @reactive.event(input.audio_data)
-    async def _():
+    def _():
         try:
             # Configure Gemini
             genai.configure(api_key=input.gemini_key())
             
-            # Get the base64 audio data
-            audio_data = base64.b64decode(input.audio_data())
+            # Convert the array back to bytes
+            audio_bytes = bytes(input.audio_data())
             
+            # Save to a temporary file
+            with tempfile.NamedTemporaryFile(suffix='.webm', delete=False) as temp_file:
+                temp_file.write(audio_bytes)
+                temp_path = temp_file.name
+
             # Create a model instance
-            model = genai.GenerativeModel('gemini-pro')
+            model = genai.GenerativeModel('gemini-1.5-flash')
             
-            # Send audio for transcription
-            response = await model.generate_content(audio_data)
+            # Send audio file for transcription with a text prompt
+            with open(temp_path, 'rb') as f:
+                response = model.generate_content(
+                    [
+                        "Please transcribe the following audio file:",
+                        {"mime_type": "audio/webm", "data": f.read()}
+                    ]
+                )
+            
+            # Clean up temporary file
+            Path(temp_path).unlink()
             
             # Update the transcript
             transcript.set(response.text)
